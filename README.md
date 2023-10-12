@@ -1,106 +1,149 @@
-# Vault Benchmark
+# vault-benchmark
 
-`vault-benchmark` is a tool designed to test the performance of Vault auth methods and secret engines. Running the binary with a benchmark configuration file, will configure any necessary resources on the Vault instance itself required to perform the tests defined. Any auth methods or secrets engine tests defined that require an external dependency such as a database will require that infrastructure be set up correctly prior to benchmarking. `vault-benchmark` makes use of the [Vegeta](https://github.com/tsenart/vegeta) HTTP load testing utility.
+- `vault-benchmark` 는 Vault 인증 방법과 비밀 엔진의 성능을 테스트하기 위해 고안된 도구입니다.
+- [Release Download](https://releases.hashicorp.com/vault-benchmark)
 
-**Warning**
-`vault-benchmark` will put a great amount of stress against the cluster itself and the infrastructure that the cluster is running on during testing, and as such is intended to only be run against a test Vault cluster that is isolated from any production systems or any other systems that can cause any negative impact.
+## Vault 구성 설정
 
-# Installation
-## Official Release Binaries
-You can download a release binary from our [release page](https://releases.hashicorp.com/vault-benchmark)
+- `vault_addr`: 볼트 주소, VAULT_ADDR 재정의
+- `cluster_json`: cluster.json 파일의 경로
+- `vault_token`: 볼트 토큰, VAULT_TOKEN 재정의
+- `audit_path`: 볼트 클러스터 생성 시, Audit 로그 파일 경로
+- `ca_pem_file`: HTTPS로 외부 볼트를 사용하는 경우, 해당 CA 파일의 경로를 PEM 형식으로 지정합니다.
 
-## Compiling From Source
-You can compile the latest version including any fixes or features from source by running `make bin`. This will put the `vault-benchmark` binary in the `dist` folder in directories that map to your `GOOS` and `GOARCH`:
+이외의 주요 옵션은 다음과 같습니다:
+
+- `workers`:  가상 사용자 (작업자 수)
+- `duration`:  벤치마크 시간
+- `rps`: 초당 요청 수
+- `report_mode` : 리포팅 모드 - terse, verbose, json
+- `pprof_interval` : 볼트 디버그 프로페서 프로파일링 수집 간격
+- `input_results` : 테스트를 실행하는 대신 이전 테스트 실행에서 JSON 파일을 읽음
+- `annotate` :  콤마로 구분된 name=value 페어로 bench_running 프로메테우스 매트릭에 포함됨
+- `debug` : 테스트를 실행하기 전에 각 벤치마크 대상을 실행하고 요청/응답 정보를 출력
+
+볼트 벤치마크는 '작업자'라는 가상 사용자를 생성하여 지속적으로가상 사용자를 생성합니다.  
+생성할 요청은 테스트 옵션에 의해 제어되며, 합이 100이어야 합니다.
+또한 해당 테스트 지정 섹션에서 찾을 수 있는 테스트별 옵션도 있습니다.
+
+## Build Project
+
+Golang 과 Git 을 설치합니다.
+Go 모듈을 사용하면 외부 모듈을 로컬로 다운로드 받게 되는데 이때 git 프로젝트를 프록시를 통해 다운로드 받게 됩니다.
+그래서 git 을 미리 설치해 두어야 합니다.
+
 ```bash
-$ make bin
-GOARCH=arm64 GOOS=darwin go build -o dist/darwin/arm64/vault-benchmark
+$ wget https://go.dev/dl/go1.18.2.linux-amd64.tar.gz
+$ sudo tar -C /usr/local -xzf go1.18.2.linux-amd64.tar.gz
+$ vi ~/.profile
+...
+export GOROOT=/usr/local/go
+export GOPATH=$HOME/go
+export PATH=$GOPATH/bin:$GOROOT/bin:$PATH
+$ source ~/.profile
+$ mkdir ~/go
+
+$ sudo apt-get update
+$ sudo apt-get install git
+$ git version
+
+$ cd ~/go
+$ git clone https://github.com/daeung0921/vault-benchmark.git
+$ cd vault-benchmark
+$ go build
+$ sudo mv vault-benchmark /usr/bin
 ```
 
-# Usage
-`vault-benchmark` can be run directly as a binary, docker container or kubernetes job. Below is an example of running the binary.
 
-First a configuration file needs to be created defining the basic vault-benchmark settings as well as defining which benchmark tests to be run. For Example:
-```hcl
-# Basic Benchmark config options
-vault_addr = "http://127.0.0.1:8200"
-vault_token = "root"
-vault_namespace="root"
+## Vault cluster
+
+벤치마크_볼트에는 `vault_addr` 및 `vault_token` 인자 또는 환경 변수 `VAULT_ADDR` 및 `VAULT_TOKEN`을 설정해야 합니다.
+Vault 클러스터에는 미리 설정된 마운트가  필요하지 않습니다. 
+테스트 준비의 일환으로 무작위로 설정된 마운트 포인트를 무작위로 설정합니다.  
+따라서 설정한 볼트 토큰에 충분한 권한이 있어야 합니다. 
+
+# Examples
+
+``` 
+$ cat > config.hcl << EOF
+vault_addr = "https://vault.idtplateer.com:8200"
+vault_token = "hvs.0uD38NBCctHe36BzeVFxGqBJ"
+ca_pem_file = "/home/ec2-user/vault_ca.pem"
 duration = "30s"
 cleanup = true
+debug = true
+report_mode = "terse"
+random_mounts = true
+nvalid = "option"
+workers = 10
 
-test "approle_auth" "approle_logins" {
-  weight = 50
+test "kvv2_read" "static_secret_writes" {
+  weight = 75
   config {
-    role {
-      role_name = "benchmark-role"
-      token_ttl="2m"
-    }
+    numkvs = 100
+    kvsize = 10
   }
 }
 
 test "kvv2_write" "static_secret_writes" {
-  weight = 50
+  weight = 25
   config {
     numkvs = 100
-    kvsize = 100
+    kvsize = 10
   }
 }
-```
-This test configuration will run two different benchmark tests, an `approle_auth` test, and a `kvv2_write` test, with the percentage of requests being split evenly between the two.
+EOF
 
-Then we run the binary and provide the configuration file path:
-```bash
 $ vault-benchmark run -config=config.hcl
-2023-05-06T11:11:44.926-0400 [INFO]  vault-benchmark: setting up targets
-2023-05-06T11:11:46.991-0400 [INFO]  vault-benchmark: starting benchmarks: duration=30s
-2023-05-06T11:12:16.994-0400 [INFO]  vault-benchmark: cleaning up targets
-2023-05-06T11:13:03.629-0400 [INFO]  vault-benchmark: benchmark complete
-Target: http://127.0.0.1:8200
-op                    count   rate         throughput   mean       95th%       99th%       successRatio
-approle_logins        155349  5178.303523  5177.967129  1.27286ms  2.142861ms  2.894675ms  100.00%
-static_secret_writes  155334  5177.819051  5177.626953  640.232µs  1.055702ms  1.554777ms  100.00%
 ```
 
-## Docker
+# Test Cases
 
-**Tip**: Create a Vault Benchmark image with the `make image` command.
+## Auth Methods
 
-First, create a network that Vault and Vault Benchmark will share:
+- [Approle Configurations](/docs/tests/auth-approle.md)
+- [Certificate Configurations](/docs/tests/auth-certificate.md)
+- [LDAP Configurations](/docs/tests/auth-ldap.md)
+- [Userpass Configurations](/docs/tests/auth-userpass.md)
 
-```bash
-docker network create vault
-```
+## Secret Engines
 
-Next, deploy Vault to Docker and ensure it's running:
+- [CassandraDB Configurations](/docs/tests/secret-cassandra.md)
+- [Consul Configurations](/docs/tests/secret-consul.md)
+- [Couchbase Configurations](/docs/tests/secret-couchbase.md)
+- [Elasticsearch Configurations](/docs/tests/elasticsearch.md)
+- [KV Configurations](/docs/tests/secret-kv.md)
+- [LDAP Configurations](/docs/tests/secret-ldap.md)
+- [MongoDB Configurations](/docs/tests/secret-mongo.md)
+- [PKI Configurations](/docs/tests/secret-pki.md)
+- [PostgreSQL Configurations](/docs/tests/secret-postgresql.md)
+- [RabbitMQ Configurations](/docs/tests/secret-rabbit.md)
+- [Redis Configurations](/docs/tests/secret-redis.md)
+- [SSH Key Signing](/docs/tests/secret-ssh-sign.md)
+- [Signed SSH Certificates Configurations](/docs/tests/secret-ssh-sign-ca.md)
+- [Transit Configurations](/docs/tests/secret-transit.md)
 
-```bash
-docker run \
-  --name=vault \
-  --hostname=vault \
-  --network=vault \
-  -p 8200:8200 \
-  -e VAULT_DEV_ROOT_TOKEN_ID="root" \
-  -e VAULT_ADDR="http://localhost:8200" \
-  -e VAULT_DEV_LISTEN_ADDRESS="0.0.0.0:8200" \
-  --privileged \
-  --detach hashicorp/vault:latest
+## System Status
 
-docker logs -f vault
-```
+- [System Status Configurations](/docs/tests/system-status.md)
 
-Once Vault is running, create a Vault Benchmark container and watch the logs for the results:
+# Outputs
 
-```bash
-docker run \
-  --name=vault-benchmark \
-  --hostname=vault-benchmark \
-  --network=vault \
-  -v ./vault-benchmark/configs/:/opt/vault-benchmark/configs \
-  --detach hashicorp/vault-benchmark:latest \
-  vault-benchmark run -config=/opt/vault-benchmark/configs/config.hcl
+## Reports
 
-docker logs -f vault-benchmark
-```
+테스트가 완료되면 stdout에 보고서가 생성됩니다.  보고서의 형식은 다음과 같은 형식을 가질 수 있습니다:
 
-# Documentation
-Documentation for `vault-benchmark` including usage and test configuration can be found in our [docs](docs/index.md)
+- `terse`: 테스트 유형당 한 줄의 메트릭 블록
+- `verbose`: 테스트 유형당 한 줄의 메트릭 블록(여러 줄)
+- `json`: 전체 메트릭을 포함하는 JSON 블록
+
+## Troubleshooting
+
+'100%'를 예상했을 때 '성공률: 0.00%'와 같은 예기치 않은 결과가 표시되는 경우,
+디버그 플래그 `-debug=true`를 사용하여 잠재적인 문제에 대한 자세한 정보를 얻으세요.
+
+## Profiling
+
+'pprof_interval'은 'vault debug' 명령을 실행하여 pprof 데이터를 수집합니다.
+는 'vault-debug-X'라는 폴더에 기록되며, 여기서 X는 타임스탬프입니다.
+ 
